@@ -37,10 +37,10 @@ It is fairly clear that many of these variables do not follow multivariate norma
 
 ```{r}
 library(MVN)
-mvn(data = data, mvnTest = "mardia")[2]
+MVN::mvn(data = data, mvnTest = "mardia")[2]
 ```
 
-Based on these outputs, we can clearly see that our data is not multivariate normal.
+Based on these outputs, we can clearly see that our data is not multivariate normal. I considered transforming some of the data using logarithms, but I decided to try fitting a model without transformation first. If we can properly transform the data, using LDA or QDA might be a viable choice for classification instead.
 
 **Basic summary statistics**
 
@@ -166,7 +166,7 @@ df <- df.residual(chosen_model)
 1 - pchisq(deviance, df)
 ```
 
-Since we are using principal components, this goodness-of-fit test does not tell us much.
+Since we are using principal components, this goodness-of-fit test does not tell us much, but we can still check the randomised quantile residuals.
 
 ```{r}
 boxplot(fitted(chosen_model) ~ derived_data$code,
@@ -177,17 +177,19 @@ library(statmod)
 plot(fitted(chosen_model), qresiduals(chosen_model))
 ```
 
-Based on the outputs here, we can see that our residuals are mostly random noise with one outlier, and that there is a clear separation between the groups or normal and of concern infants.
+Based on the outputs here, we can see that our residuals are mostly random noise, and that there is a clear separation between the groups or normal and of concern infants.
 
 Lastly, let us consider our cross-validation to determine how well our model can predict the health of the infants.
 
 ```{r}
 library(crossval)
 
+data <- as.data.frame(data)
+
 predfun.lm <- function(train.x, train.y, test.x, test.y) {
   glm.fit <- glm(train.y ~ ., data = train.x, family = binomial)
   ynew <- predict(glm.fit, test.x, type = 'response')
-  mean((ynew - test.y))^2
+  mean((ynew - test.y)^2)
 }
 
 y.fit1 <- "code"
@@ -230,10 +232,36 @@ new_scale
 - Loads against most decelerations except for prolongued decelerations.
 - Barely loads on any summary statistics, with almost none of the average/max/min/variability variables being loaded on.
 
-Overall it is very difficult to definitively claim what any of these derived variables represent, especially given my limited knowledge of neo-natal care, and cardiology. However, what is clear from this analysis is that we can accurately classify children into of concern and healthy groupings, which may prove beneficial to health professionals. That said, there is a significant issue in the fact that the mathemtaics used to get to this conclusion has arrived at a fairly complex model based on derived components. Because of this, the it is not simple equation nor rule of thumb that a practitioner may use, and would in all likelihood require a computer with the model pre-loaded, and then require the inputting of all measurements, significantly delaying the process. 
+Overall it is very difficult to definitively claim what any of these derived variables represent, especially given my limited knowledge of neo-natal care, and cardiology. However, what is clear from this analysis is that we can accurately classify children into of concern and healthy groupings, which may prove beneficial to health professionals. That said, there is a significant issue in the fact that the mathematics used to get to this conclusion has arrived at a fairly complex model based on derived components. Because of this, the it is not simple equation nor rule of thumb that a practitioner may use, and would in all likelihood require a computer with the model pre-loaded, and then require the inputting of all measurements, significantly delaying the process. 
 
 However, one useful piece of information revealed in this analysis is that the baseline value is important in the loadings of the first three principal components, accounting for much of the variation, but also that many of the histogram averages are only loaded by the first two prinicpal components, in opposit directions. This suggests that a less complicated model should be possible, perhaps based on this variables, but likely requiring more as well.
 
+I noticed that in the PCA pairs plots, the third principal component seems to do a fairly good job at separation, so I decided to investigate and noticed that the highest loading on this component was abnormal short term viability. We will now fit a simple logistic regression model using just this predictor to see how well it performs alone.
+
+```{r}
+abnormal_logistics <- glm(recoded ~ abnormal_short_term_variability, family=binomial, data = data)
+summary(abnormal_logistics)
+
+deviance <- deviance(abnormal_logistics)
+df <- df.residual(abnormal_logistics)
+1 - pchisq(deviance, df) # fits very well, check the randomised quantile data
+plot(fitted(abnormal_logistics), qresiduals(abnormal_logistics)) # mostly white noise
+ 
+```
+
+The model appears fairly consistent with our checks, and also has a much lower AIC than our principal components based model, so let us now consider it's 10 fold cross validation outputs.
+
+
+```{r}
+x.fit1 <- names(abnormal_logistics$coefficients)[-1]
+y.fit1 <- "recoded"
+cv.out = crossval(predfun.lm, X = as.data.frame(data[,"abnormal_short_term_variability"]), Y = data[, y.fit1], K = 10, B = 1, verbose = FALSE)
+MSPE_1 <- cv.out$stat
+MSPE_1se <- cv.out$stat.se
+
+MSPE_1
+MSPE_1se
+```
 
 
 ***Next steps***
