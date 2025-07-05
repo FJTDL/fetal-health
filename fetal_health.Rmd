@@ -2,7 +2,9 @@
 title: "Fetal Health"
 author: "Finn de Lange"
 date: "2025-05-24"
-output: html_document
+output:
+  pdf_document: default
+  html_document: default
 ---
 
 ```{r setup, include=FALSE}
@@ -17,7 +19,7 @@ knitr::opts_chunk$set(
 
 **Data import**
 
-```{r}
+```{r eval=FALSE}
 data <- read_csv("fetal_health.csv")
 
 for (col_name in names(data)) {
@@ -33,49 +35,17 @@ for (col_name in names(data)) {
 }
 ```
 
-It is fairly clear that many of these variables do not follow multivariate normality. We can further test this using a Mardia test.
+A visual inspection revealed that many of these variables do not follow multivariate normality. We can further test this using a Mardia test.
 
-```{r}
+A quick disclaimer that in order to improve readability, many of the outputs have been supressed. If you would like to see these, I recommend downloading this RMD file and running it yourself.
+
+```{r results = "hide"}
 library(MVN)
+data <- read_csv("fetal_health.csv")
 MVN::mvn(data = data, mvnTest = "mardia")[2]
 ```
 
-Based on these outputs, we can clearly see that our data is not multivariate normal. I considered transforming some of the data using logarithms, but I decided to try fitting a model without transformation first. If we can properly transform the data, using LDA or QDA might be a viable choice for classification instead.
-
-**Basic summary statistics**
-
-```{r}
-data %>%
-  summary()
-```
-
-**Investigating correlations**
-
-```{r}
-library(reshape2)
-library(RColorBrewer)
-
-df_numeric <- as.data.frame(lapply(data, as.numeric))
-
-# Compute correlation matrix
-cor_matrix <- cor(df_numeric, use = "pairwise.complete.obs")
-
-# Melt the correlation matrix to long format
-cor_melted <- melt(cor_matrix)
-
-# Create heatmap
-ggplot(cor_melted, aes(Var1, Var2, fill = value)) +
-  geom_tile(color = "black") +
-  scale_fill_gradient2(
-    low = "black", mid = "skyblue", high = "white",
-    midpoint = 0.5, limit = c(-0.5, 1),
-    name = "Correlation"
-  )
-
-
-```
-
-There do not appear to be any particularly stand out values that correlate, aside from summary statistics (mean, median and mode of the histogram correlate highly).
+Based on the outputs, our data is not multivariate normal. I considered transforming some of the data using logarithms, but I decided to try fitting a model without transformation first. If we can properly transform the data, using LDA or QDA might be a viable choice for classification instead.
 
 Given that the fetal health column is recorded and can tell us if the infant was classified as normal, suspect or pathological, we should be able to create model that can classify into two groups - normal or of concern.
 
@@ -90,12 +60,6 @@ data <- data %>%
 
 plot_data <- data
 colnames(plot_data) <- paste0(seq_along(data))
-
-cor_matrix <- cor(plot_data[, 1:21], use = "complete.obs")
-cor_matrix[abs(cor_matrix) < 0.7] <- NA 
-round(cor_matrix, 2)
-
-colnames(data[,c(12, 13, 15)])
 ```
 
 **Rudimentary model fitting**
@@ -127,7 +91,7 @@ Based on the plot, we can see that there is significant overlap in many of the p
 
 In our next step we will attempt to fit the logistic model, which will involve dredging over all the possible combinations. I have chosen to use AICc as my dredging criteria. We will first consider if any of our derived variables require transformation.
 
-```{r}
+```{r fig.show = 'hide'}
 library(mgcv)
 
 derived_data <- as.data.frame(dimension_reduced$x[,1:5])
@@ -138,9 +102,9 @@ gam.fit <- gam(code ~ s(PC1) + s(PC2) + s(PC3) + s(PC4) + s(PC5), family = "bino
 plot(gam.fit)
 ```
 
-It does not appear like our data requires any transformations. Now we can move on to dredging our model. I intend to avoid any interaction terms with more than two variables, as it makes interpretation of the model more difficult.
+It does not appear like our data requires any transformations, although the first principal component suggests possibly transforming with to a 7th or 8th degree, which I have chosen not to do, as visually it does not appear especially strong. Now we can move on to dredging our model. I intend to avoid any interaction terms with more than two variables, as it makes interpretation of the model more difficult.
 
-```{r}
+```{r results = "hide"}
 library(MuMIn)
 
 anova(glm(code ~  PC1 * PC2 * PC3 * PC4 * PC5, data = derived_data, family = binomial), test='Chisq')
@@ -162,8 +126,10 @@ I ended up choosing the second model provided by dredge, as it had a comparable 
 deviance <- deviance(chosen_model)
 df <- df.residual(chosen_model)
 
+plot(chosen_model, which=1)
+
 # p-value for goodness-of-fit test
-1 - pchisq(deviance, df)
+1 - pchisq(deviance, df) 
 ```
 
 Since we are using principal components, this goodness-of-fit test does not tell us much, but we can still check the randomised quantile residuals.
@@ -269,3 +235,251 @@ MSPE_1se
 - Logging some of the variables
 - Removing some of the variables
 - Using an ROC
+
+
+
+```{r}
+library(pROC)
+
+fetal_roc <- roc(response = data$recoded, predictor = fitted.values(abnormal_logistics))
+
+coords(fetal_roc, "best", inut="threshold")
+plot(fetal_roc, col="red", grid=TRUE, lwd=2.5)
+```
+
+```{r}
+auc(fetal_roc)
+```
+
+From the further ROC analysis, we can see that at best the second, simpler model can achieve a specificity of 0.84 and sensitivity of 0.77, which is not bad, but a bit low for medical test results.
+
+As such, let us now perform the same analysis on our prior, more complicated model.
+
+```{r}
+fetal_roc_PC <- roc(response = data$recoded, predictor = fitted.values(chosen_model))
+
+coords(fetal_roc_PC, "best", input="threshold")
+plot(fetal_roc_PC, col="red", grid=TRUE, lwd=2.5)
+
+```
+
+
+
+```{r}
+auc(fetal_roc_PC)
+```
+
+The second model does a significantly better job discriminating, with both the sensitivty and specificity at similar values, both of which pushing on the edge of 90%. While this is a notable improvement from the simpler model, it would still give false test results a little over 10% of the time.
+
+In conclusion, the simpler model has a significantly lower sensitivity than the complex model, and a slightly lower specificity, which suggests that the more complex second model is more suitable. However, as the second model still under performs compared to the regulator preferences of 95%-99%+ accuracy, so I would not recommend widespread use of either model.
+
+While I would prefer to increase the sensitivity, even at risk of decreasing the specificity, I cannot find an efficient way to do this short of classing every infant as at risk, which would defeat the point of this model entirely.
+
+The only way I can find that would provide a decent attempt at finding this is to trawl through the possible indices for the sensitivities to find one with an accuracy in the desired range.
+
+```{r}
+chosen_threshold <- 1100
+
+fetal_roc_PC$thresholds[1291]
+
+fetal_roc_PC$sensitivities[chosen_threshold]
+fetal_roc_PC$specificities[chosen_threshold]
+```
+
+By essentially guessing and checking I was able to find a threshold that gives a sensitivity of 98% in return for a 66% specificity. this means only 2% of at risk infants would be missed, and that roughly 34% of of healthy infants would be class as being at risk. 
+
+I believe that this is a suitable trade off, as the risks of an at risk infant not being detected are significantly greater than the risks of further tests or possible treatment.
+
+If we seek to reach the lower bound of this, that being a 95% sensitivty, we find that the specificity increases to 77%. While this is good, as we now only mis-classify 23% of health infants as at-risk, an 11% reduction, we have now more than doubled the number of infants we are declaring healthy despite being at risk. Although 5% in total is fairly low, the decision of which threshold to use should be left to medical practitioners.
+
+```{r}
+chosen_threshold <- 1291
+
+fetal_roc_PC$sensitivities[chosen_threshold]
+fetal_roc_PC$specificities[chosen_threshold]
+```
+
+Ultimately, it is possible for us to develop a model that will provide a suitable level of accuracy in the identification of at risk infants, with trade offs for the number of false positives we are willing to deal with in exchange for higher successful identification of true positives. The decision regarding the threshold should be left to practitioners, who can decide if the costs, risks, and additional requires of further testing or possible treatment on a healthy infant are worth the higher successful identification of at risk children.
+
+This will also largely depend on the proportion of children we expect to be at risk.
+
+```{r}
+round(sum(data$recoded) / nrow(data), 4)
+0.2215 * nrow(data)
+0.23 * (nrow(data) - sum(data$recoded))
+```
+
+As seen, in our cases only 22.15% of the infants in our data were actually at risk, meaning that if we used to 95% model we would have further classed a further 381 infants as at risk when they were actually healthy. However, the majority of cancer tests return false positives, with very few positive mamograms actually leading to breast cancer diagnoses, in exchange for patients recieving peace of mind, and the practitioners knowing they are more likely to catch cancer cases than not.
+
+It would be my naive recommendation to use the 95% sensitive model, as I believe that while successfully classing as many at risk infants as possible correctly, the extra load on the system from testing healthy infants may result in significant delays in an already backlogged health system. As stated many times, the actual decision should ultimately lie with those who best understand our health system, namely the doctors and nurses who conduct much of the testing and treatment.
+
+Finally, I would like to touch on the fact that our model is very complicated. Even though we do have a high level of sensitivity, and a relatively good level of specificity, the fact is that our model is not something that can be applied easily, and will definitely need a computer to be effectively used. As such, I would recommend the automation of test result interpretation by loading results directly into a program with the model pre-loaded.
+
+
+
+Another alternative would be to try to develop a model for this data using multivariate techniques such as LDA or QDA. Firstly,there is sufficient data to make these claims, but we need to further investigate the MVN and equal covariance assumptions, which we can do using Kolmogorov-Smirnov and Multivariate Levene's tests respectively.
+
+One advantage to this is that we do not have to collapse the groups into two, so we can work with three groups as per the original data.
+
+```{r}
+library(mvabund)
+data <- read_csv("fetal_health.csv")
+data_matrix <- as.matrix(data[,-22])
+
+dimesion_manova <- manova(data_matrix ~ data$fetal_health)
+abs_resids <- abs(dimesion_manova$resid)
+
+maonva_permutations <- manylm(abs_resids ~ data$fetal_health, cor.type = "R", test = "F")
+anova(maonva_permutations, resamp = 'perm.resid')
+```
+
+Based on the highly significant P-value output, we can conclude that the null hypothesis of equal covariance must be rejected. Even if this fails, QDA is still possible provided MVN holds, although based on the plots, it does seem unlikely.
+
+```{r}
+resid_mat <- residuals(dimesion_manova)
+Sigma <- cov(resid_mat)
+
+maha <- mahalanobis(resid_mat, center = colMeans(resid_mat), cov = Sigma)
+
+qqplot(qchisq(ppoints(nrow(data)), df = ncol(resid_mat)), y = maha,
+       xlab = "Chi-Squared Quantiles", ylab = "Mahalanobis Distances")
+qqline(maha, distribution = function(p) qchisq(p, df = ncol(resid_mat)))
+
+ks.test(maha, "pchisq", df = ncol(resid_mat))
+
+```
+
+So the data is definitely not MVN. This means that neither LDA nor QDA are good choices, but we can use PLS-DA.
+
+```{r}
+library(mixOmics)
+
+X <- data_matrix
+Y <- data$fetal_health
+
+plsda_model <- plsda(X, Y, ncomp=2)
+
+plotIndiv(plsda_model, 
+          comp = c(1, 2), 
+          group = Y, 
+          ellipse = TRUE, 
+          legend = TRUE,  
+          legend.title = "Group", 
+          title = "PLS-DA - Components 1 & 2")
+```
+
+
+
+```{r}
+set.seed(123)
+perf <- perf(plsda_model, validation = "Mfold", folds = 5,  nrepeat = 10)
+
+plot(perf, criterion = "error.rate")
+```
+
+The results from this are not especially useful, as we can see that the second group does not inhabit an especially unique area, and significantly overlaps with the other groups. Let us now return to the collapsed group problem and repeat this step.
+
+```{r}
+data <- data %>%
+  mutate(
+    recoded = ifelse(fetal_health == 1, 0, 1)
+  ) %>%
+  dplyr::select(-fetal_health)
+
+data_matrix <- as.matrix(data[,-22])
+
+X <- data_matrix
+Y <- data$recoded
+
+plsda_model <- plsda(X, Y, ncomp=2)
+
+plotIndiv(plsda_model, 
+          comp = c(1, 2), 
+          group = Y, 
+          ellipse = TRUE, 
+          legend = TRUE,  
+          legend.title = "Group", 
+          title = "PLS-DA - Components 1 & 2")
+```
+
+We can see that this solution is actually much worse than the logistic regression solution, as there is significant overlap between these groups. Not only this, but it is clear from both PLS-DA analyses that the proportions of variance explained are far too low in both solutions.
+
+```{r}
+plsdaout <- plsda(X, Y, ncomp=10)
+plotVar(plsdaout)
+plotIndiv(plsdaout, comp=1:2, ind.names=FALSE, cex=0.5)
+```
+
+```{r}
+health.perf <- perf(plsdaout)
+plot(health.perf)
+```
+
+There is fairly good indication that using two components is sufficient.
+
+```{r}
+data <- read_csv("fetal_health.csv")
+data_matrix <- as.matrix(data[,-22])
+
+X <- data_matrix
+Y <- data$fetal_health
+
+plsdaout <- plsda(X, Y, ncomp=10)
+plotVar(plsdaout)
+plotIndiv(plsdaout, comp=1:2, ind.names=FALSE, cex=0.5)
+```
+
+Let's try a cross-validation method using the three class solution, as a model capable of classifying the three groups is more valuable than classing into the collapsed groups.
+
+```{r}
+X <- data_matrix
+Y <- data$fetal_health
+
+plsda_model <- plsda(X, Y, ncomp=5)
+
+plotIndiv(plsda_model, 
+          comp = c(1, 2), 
+          group = Y, 
+          ellipse = TRUE, 
+          legend = TRUE,  
+          legend.title = "Group", 
+          title = "PLS-DA - Components 1 & 2")
+
+cv_perf <- perf(plsda_model, validation = "Mfold", folds = 5, nrepeat = 18)
+cv_perf$error.rate
+
+error_rates <- cv_perf$error.rate$overall
+
+accuracy <- 1 - error_rates
+
+best_accuracy <- apply(accuracy, 1, max)
+best_accuracy
+
+```
+
+When we use three components, we can achieve an accuracy of 86%, which is the best while balancing for complexity. This is similar to the mutually maximise AUC solution for the logistic regression method, suggesting that this value may truly be the limit in our combined classification ability of all groups.
+
+Finally, let. us see if a Naive Bayes Classifier can do a better job.
+
+```{r}
+library(e1071)
+library(caTools)
+library(caret)
+
+set.seed(8904)
+split <- sample.split(data$fetal_health, SplitRatio = 0.8)
+training_data <- subset(data, split == TRUE)
+testing_data <- subset(data, split == FALSE)
+
+scaled_training <- scale(training_data)
+scaled_testing <- scale(testing_data)
+
+nb_classifier <- naiveBayes(fetal_health ~ ., data = training_data)
+
+nb_preds <- predict(nb_classifier, newdata = testing_data)
+
+cm <- table(testing_data$fetal_health, nb_preds)
+confusionMatrix(cm)
+```
+
+The Naive Bayes Classifier solution achieved 83.29% accuracy, which is a slight downgrade compared to the PLS-DA and Logistic Regression solutions, suggesting that one of those methods may be a better choice. In particular, we can see that the Naive Bayes Classifier mis-identifies many of the pathological cases as being at-risk, and two as normal.
